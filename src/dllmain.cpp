@@ -436,6 +436,31 @@ void Framerate()
         {
             spdlog::error("Unlock Framerate: Pattern scan failed.");
         }
+        
+        // Event script waits
+        // Cutscenes and conversations are driven by Lua event scripts, which pace themselves with waitFrame(n) - "wait n frames at the game's tick rate".
+        // The engine converts that to a countdown in seconds (n / tickRate) which is then decremented by the real frame delta.
+        // The tick rate it divides by comes from the same getter Game Speed 1 overwrites with the live framerate, so at 120fps a waitFrame(120) wait lasts 1 second instead of 4 and every scripted wait collapses to 30/framerate of its intended length.
+        // In dialogue this makes the next line start while the current line's voice clip is still playing. 
+        // Scripts that instead call setMessageWaitMode() wait on the message system and are unaffected, which is why only some conversations are broken.
+        // Restore the intended duration by redoing the conversion with the game's real 30fps tick rate; the frame count parameter is still in xmm6 at this point, and rdi is the script object whose wait timer was just written.
+        // The pattern is deliberately not wildcarded: the hook depends on the exact registers the matched instructions use (mulss xmm1, xmm6 and movss [rdi+1C0], xmm1), so if those ever differ it should fail the scan rather than write somewhere else.
+        uint8_t* EventWaitFrameScanResult = Memory::PatternScan(baseModule, "F3 0F 5E C8 C7 87 BC 01 00 00 02 00 00 00 F3 0F 59 CE F3 0F 11 8F C0 01 00 00");
+        if (EventWaitFrameScanResult)
+        {
+            spdlog::info("Unlock Framerate: Event Wait Frame: Address is {:s}+{:x}", sExeName.c_str(), (uintptr_t)EventWaitFrameScanResult - (uintptr_t)baseModule);
+
+            static SafetyHookMid EventWaitFrameMidHook{};
+            EventWaitFrameMidHook = safetyhook::create_mid(EventWaitFrameScanResult + 0x1A,
+                [](SafetyHookContext& ctx)
+                {
+                    *reinterpret_cast<float*>(ctx.rdi + 0x1C0) = ctx.xmm6.f32[0] / 30.0f;
+                });
+        }
+        else
+        {
+            spdlog::error("Unlock Framerate: Event Wait Frame: Pattern scan failed.");
+        }
     }
 }
 
